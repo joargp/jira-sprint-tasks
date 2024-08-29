@@ -21,6 +21,12 @@ struct Issue {
 #[derive(Debug, Serialize, Deserialize)]
 struct Fields {
     summary: String,
+    parent: Option<ParentIssue>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ParentIssue {
+    key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -110,7 +116,8 @@ async fn main() -> Result<()> {
             let response: JiraResponse = serde_json::from_str(&issues_body)?;
 
             for issue in response.issues {
-                println!("{}\t{}", issue.key, issue.fields.summary);
+                let parent_key = issue.fields.parent.as_ref().map_or(String::new(), |parent| format!("{}:", parent.key));
+                println!("{}{}\t{}", parent_key, issue.key, issue.fields.summary);
             }
         } else {
             eprintln!("Error: Failed to fetch issues. Status: {}", issues_response.status());
