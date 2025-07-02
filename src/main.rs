@@ -18,7 +18,12 @@ struct Args {
 #[derive(clap::Subcommand, Debug)]
 enum Commands {
     List,
-    Create,
+    Create {
+        #[arg(short, long, help = "Task summary")]
+        summary: Option<String>,
+        #[arg(short, long, help = "Task description")]
+        description: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,9 +131,15 @@ fn prompt(message: &str) -> Result<String> {
     Ok(input.trim().to_string())
 }
 
-async fn create_issue(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64) -> Result<()> {
-    let summary = prompt("Enter task summary: ")?;
-    let description = prompt("Enter task description (optional): ")?;
+async fn create_issue(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64, summary: Option<String>, description: Option<String>) -> Result<()> {
+    let summary = match summary {
+        Some(s) => s,
+        None => prompt("Enter task summary: ")?,
+    };
+    let description = match description {
+        Some(d) => d,
+        None => prompt("Enter task description (optional): ")?,
+    };
     
     let project_key = "SKLLS";
     
@@ -218,8 +229,8 @@ async fn main() -> Result<()> {
             Commands::List => {
                 list_tasks(&config, &client, &auth_header, sprint_id).await?;
             }
-            Commands::Create => {
-                create_issue(&config, &client, &auth_header, sprint_id).await?;
+            Commands::Create { summary, description } => {
+                create_issue(&config, &client, &auth_header, sprint_id, summary, description).await?;
             }
         }
     } else {
