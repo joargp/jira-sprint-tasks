@@ -19,9 +19,9 @@ struct Args {
 enum Commands {
     List,
     Create {
-        #[arg(short, long, help = "Task summary")]
+        #[arg(short, long, help = "Task summary (required for non-interactive mode)")]
         summary: Option<String>,
-        #[arg(short, long, help = "Task description")]
+        #[arg(short, long, help = "Task description (optional)")]
         description: Option<String>,
     },
 }
