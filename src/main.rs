@@ -4,13 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use base64;
+use base64::{Engine as _, engine::general_purpose};
 use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Args {}
+struct Args {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    List,
+    Create,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Issue {
@@ -45,6 +54,38 @@ struct Config {
     jira_email: String,
     jira_api_token: String,
     board_id: String,
+    project_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CreateIssueRequest {
+    fields: CreateIssueFields,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CreateIssueFields {
+    project: ProjectRef,
+    summary: String,
+    description: String,
+    issuetype: IssueTypeRef,
+    #[serde(rename = "customfield_10020")]
+    sprint: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProjectRef {
+    key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IssueTypeRef {
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CreateIssueResponse {
+    key: String,
+    id: String,
 }
 
 fn get_config_path() -> Result<PathBuf> {
@@ -71,7 +112,8 @@ fn get_or_create_config() -> Result<Config> {
     }
 
     let config_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
-    let config: Config = serde_json::from_str(&config_str).context("Failed to parse config file")?;
+    let mut config: Config = serde_json::from_str(&config_str).context("Failed to parse config file")?;
+
 
     Ok(config)
 }
@@ -84,13 +126,77 @@ fn prompt(message: &str) -> Result<String> {
     Ok(input.trim().to_string())
 }
 
+async fn create_issue(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64) -> Result<()> {
+    let summary = prompt("Enter task summary: ")?;
+    let description = prompt("Enter task description (optional): ")?;
+    
+    let project_key = "SKLLS";
+    
+    let create_request = CreateIssueRequest {
+        fields: CreateIssueFields {
+            project: ProjectRef {
+                key: project_key.to_string(),
+            },
+            summary,
+            description: if description.is_empty() { String::new() } else { description },
+            issuetype: IssueTypeRef {
+                name: "Task".to_string(),
+            },
+            sprint: Some(sprint_id),
+        },
+    };
+    
+    let create_url = format!("https://{}/rest/api/2/issue", config.jira_domain);
+    let response = client.post(&create_url)
+        .header(AUTHORIZATION, auth_header)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&create_request)
+        .send()
+        .await?;
+    
+    if response.status().is_success() {
+        let create_response: CreateIssueResponse = response.json().await?;
+        println!("Successfully created task: {}", create_response.key);
+    } else {
+        let error_text = response.text().await?;
+        eprintln!("Error creating task: {}", error_text);
+        std::process::exit(1);
+    }
+    
+    Ok(())
+}
+
+async fn list_tasks(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64) -> Result<()> {
+    let issues_url = format!("https://{}/rest/agile/1.0/sprint/{}/issue", config.jira_domain, sprint_id);
+    let issues_response = client.get(&issues_url)
+        .header(AUTHORIZATION, auth_header)
+        .header(CONTENT_TYPE, "application/json")
+        .send()
+        .await?;
+
+    if issues_response.status().is_success() {
+        let issues_body = issues_response.text().await?;
+        let response: JiraResponse = serde_json::from_str(&issues_body)?;
+
+        for issue in response.issues {
+            let parent_summary = issue.fields.parent.as_ref().map_or(String::new(), |parent| format!("{}: ", parent.fields.summary));
+            println!("{}{}\t{}", parent_summary, issue.key, issue.fields.summary);
+        }
+    } else {
+        eprintln!("Error: Failed to fetch issues. Status: {}", issues_response.status());
+        std::process::exit(1);
+    }
+    
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _args = Args::parse();
+    let args = Args::parse();
     let config = get_or_create_config()?;
 
     let auth_string = format!("{}:{}", config.jira_email, config.jira_api_token);
-    let encoded_auth = base64::encode(&auth_string);
+    let encoded_auth = general_purpose::STANDARD.encode(&auth_string);
     let auth_header = format!("Basic {}", encoded_auth);
 
     let client = reqwest::Client::new();
@@ -108,25 +214,13 @@ async fn main() -> Result<()> {
         let sprint_json: serde_json::Value = serde_json::from_str(&sprint_body)?;
         let sprint_id = sprint_json["values"][0]["id"].as_u64().unwrap();
 
-        // Get issues for the active sprint
-        let issues_url = format!("https://{}/rest/agile/1.0/sprint/{}/issue", config.jira_domain, sprint_id);
-        let issues_response = client.get(&issues_url)
-            .header(AUTHORIZATION, &auth_header)
-            .header(CONTENT_TYPE, "application/json")
-            .send()
-            .await?;
-
-        if issues_response.status().is_success() {
-            let issues_body = issues_response.text().await?;
-            let response: JiraResponse = serde_json::from_str(&issues_body)?;
-
-            for issue in response.issues {
-                let parent_summary = issue.fields.parent.as_ref().map_or(String::new(), |parent| format!("{}: ", parent.fields.summary));
-                println!("{}{}\t{}", parent_summary, issue.key, issue.fields.summary);
+        match args.command.unwrap_or(Commands::List) {
+            Commands::List => {
+                list_tasks(&config, &client, &auth_header, sprint_id).await?;
             }
-        } else {
-            eprintln!("Error: Failed to fetch issues. Status: {}", issues_response.status());
-            std::process::exit(1);
+            Commands::Create => {
+                create_issue(&config, &client, &auth_header, sprint_id).await?;
+            }
         }
     } else {
         eprintln!("Error: Failed to fetch sprint. Status: {}", sprint_response.status());
