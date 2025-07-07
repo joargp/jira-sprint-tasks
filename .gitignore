@@ -1,1 +1,15 @@
 /target
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Config files with sensitive data
+config.json
+**/config.json
+
+# API tokens and secrets
+*.token
+*.key
+*.pem

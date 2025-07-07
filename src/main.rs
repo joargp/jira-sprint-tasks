@@ -5,7 +5,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use base64::{Engine as _, engine::general_purpose};
-use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 #[derive(Parser, Debug)]
@@ -106,19 +105,21 @@ fn get_or_create_config() -> Result<Config> {
     if !config_path.exists() {
         fs::create_dir_all(config_path.parent().unwrap()).context("Failed to create config directory")?;
         
-        let mut config = HashMap::new();
-        config.insert("jira_domain", prompt("Enter Jira domain (e.g., your-domain.atlassian.net): ")?);
-        config.insert("jira_email", prompt("Enter Jira email: ")?);
-        config.insert("jira_api_token", prompt("Enter Jira API token: ")?);
-        config.insert("board_id", prompt("Enter Board ID: ")?);
+        let config = Config {
+            jira_domain: prompt("Enter Jira domain (e.g., your-domain.atlassian.net): ")?,
+            jira_email: prompt("Enter Jira email: ")?,
+            jira_api_token: prompt("Enter Jira API token: ")?,
+            board_id: prompt("Enter Board ID: ")?,
+            project_key: None,
+        };
 
         let config_str = serde_json::to_string_pretty(&config)?;
         fs::write(&config_path, config_str).context("Failed to write config file")?;
+        println!("Config file created at: {:?}", config_path);
     }
 
     let config_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
-    let mut config: Config = serde_json::from_str(&config_str).context("Failed to parse config file")?;
-
+    let config: Config = serde_json::from_str(&config_str).context("Failed to parse config file")?;
 
     Ok(config)
 }
@@ -129,6 +130,19 @@ fn prompt(message: &str) -> Result<String> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
+}
+
+fn update_config_api_token(config: &mut Config) -> Result<()> {
+    let config_path = get_config_path()?;
+    
+    println!("Current API token appears to be invalid or expired.");
+    config.jira_api_token = prompt("Enter new Jira API token: ")?;
+    
+    let config_str = serde_json::to_string_pretty(config)?;
+    fs::write(&config_path, config_str).context("Failed to update config file")?;
+    println!("Config updated with new API token.");
+    
+    Ok(())
 }
 
 async fn create_issue(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64, summary: Option<String>, description: Option<String>) -> Result<()> {
@@ -204,38 +218,46 @@ async fn list_tasks(config: &Config, client: &reqwest::Client, auth_header: &str
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let config = get_or_create_config()?;
+    let mut config = get_or_create_config()?;
 
-    let auth_string = format!("{}:{}", config.jira_email, config.jira_api_token);
-    let encoded_auth = general_purpose::STANDARD.encode(&auth_string);
-    let auth_header = format!("Basic {}", encoded_auth);
+    loop {
+        let auth_string = format!("{}:{}", config.jira_email, config.jira_api_token);
+        let encoded_auth = general_purpose::STANDARD.encode(&auth_string);
+        let auth_header = format!("Basic {}", encoded_auth);
 
-    let client = reqwest::Client::new();
+        let client = reqwest::Client::new();
 
-    // Get the active sprint for the board
-    let sprint_url = format!("https://{}/rest/agile/1.0/board/{}/sprint?state=active", config.jira_domain, config.board_id);
-    let sprint_response = client.get(&sprint_url)
-        .header(AUTHORIZATION, &auth_header)
-        .header(CONTENT_TYPE, "application/json")
-        .send()
-        .await?;
+        // Get the active sprint for the board
+        let sprint_url = format!("https://{}/rest/agile/1.0/board/{}/sprint?state=active", config.jira_domain, config.board_id);
+        let sprint_response = client.get(&sprint_url)
+            .header(AUTHORIZATION, &auth_header)
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
 
-    if sprint_response.status().is_success() {
-        let sprint_body = sprint_response.text().await?;
-        let sprint_json: serde_json::Value = serde_json::from_str(&sprint_body)?;
-        let sprint_id = sprint_json["values"][0]["id"].as_u64().unwrap();
+        if sprint_response.status().is_success() {
+            let sprint_body = sprint_response.text().await?;
+            let sprint_json: serde_json::Value = serde_json::from_str(&sprint_body)?;
+            let sprint_id = sprint_json["values"][0]["id"].as_u64().unwrap();
 
-        match args.command.unwrap_or(Commands::List) {
-            Commands::List => {
-                list_tasks(&config, &client, &auth_header, sprint_id).await?;
+            match args.command.unwrap_or(Commands::List) {
+                Commands::List => {
+                    list_tasks(&config, &client, &auth_header, sprint_id).await?;
+                }
+                Commands::Create { summary, description } => {
+                    create_issue(&config, &client, &auth_header, sprint_id, summary, description).await?;
+                }
             }
-            Commands::Create { summary, description } => {
-                create_issue(&config, &client, &auth_header, sprint_id, summary, description).await?;
+            break;
+        } else {
+            if sprint_response.status() == 401 {
+                update_config_api_token(&mut config)?;
+                continue;
+            } else {
+                eprintln!("Error: Failed to fetch sprint. Status: {}", sprint_response.status());
+                std::process::exit(1);
             }
         }
-    } else {
-        eprintln!("Error: Failed to fetch sprint. Status: {}", sprint_response.status());
-        std::process::exit(1);
     }
 
     Ok(())
