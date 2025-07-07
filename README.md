@@ -28,14 +28,26 @@ Sprint Tasks CLI is a command-line tool for fetching and displaying tasks from t
 
 ## Usage
 
-After installation, you can run the Sprint Tasks CLI from anywhere in your terminal:
+
+After installation you can run the CLI to list tasks in your active sprint:
 
 ```
 sprint-tasks
 ```
 
-This will display the list of tasks in your active sprint, showing the issue key and summary for each task.
+This is equivalent to running `sprint-tasks list`.
 
+To create a new task in the active sprint, run:
+
+```
+sprint-tasks create
+```
+
+The command will prompt for a summary and optional description. For non-interactive use, provide them as flags:
+
+```
+sprint-tasks create --summary "My task" --description "Optional details"
+```
 ## Configuration
 
 On first run, the CLI will prompt you to enter the following information:
