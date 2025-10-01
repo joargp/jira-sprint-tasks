@@ -192,7 +192,10 @@ async fn create_issue(config: &Config, client: &reqwest::Client, auth_header: &s
 }
 
 async fn list_tasks(config: &Config, client: &reqwest::Client, auth_header: &str, sprint_id: u64) -> Result<()> {
-    let issues_url = format!("https://{}/rest/agile/1.0/sprint/{}/issue", config.jira_domain, sprint_id);
+    let mut all_issues = Vec::new();
+
+    // Fetch sprint issues
+    let issues_url = format!("https://{}/rest/agile/1.0/sprint/{}/issue?maxResults=1000", config.jira_domain, sprint_id);
     let issues_response = client.get(&issues_url)
         .header(AUTHORIZATION, auth_header)
         .header(CONTENT_TYPE, "application/json")
@@ -202,16 +205,42 @@ async fn list_tasks(config: &Config, client: &reqwest::Client, auth_header: &str
     if issues_response.status().is_success() {
         let issues_body = issues_response.text().await?;
         let response: JiraResponse = serde_json::from_str(&issues_body)?;
-
-        for issue in response.issues {
-            let parent_summary = issue.fields.parent.as_ref().map_or(String::new(), |parent| format!("{}: ", parent.fields.summary));
-            println!("{}{}\t{}", parent_summary, issue.key, issue.fields.summary);
-        }
+        all_issues.extend(response.issues);
     } else {
-        eprintln!("Error: Failed to fetch issues. Status: {}", issues_response.status());
+        eprintln!("Error: Failed to fetch sprint issues. Status: {}", issues_response.status());
         std::process::exit(1);
     }
-    
+
+    // Fetch backlog issues (issues not in any sprint)
+    let backlog_url = format!("https://{}/rest/agile/1.0/board/{}/backlog?maxResults=1000", config.jira_domain, config.board_id);
+    let backlog_response = client.get(&backlog_url)
+        .header(AUTHORIZATION, auth_header)
+        .header(CONTENT_TYPE, "application/json")
+        .send()
+        .await?;
+
+    if backlog_response.status().is_success() {
+        let backlog_body = backlog_response.text().await?;
+        let backlog_response: JiraResponse = serde_json::from_str(&backlog_body)?;
+        // Only add backlog issues that are not Done or Closed
+        let open_backlog_issues: Vec<Issue> = backlog_response.issues.into_iter()
+            .filter(|issue| {
+                // This is a simple check - you may need to adjust based on your status names
+                let summary_lower = issue.fields.summary.to_lowercase();
+                !summary_lower.contains("[done]") && !summary_lower.contains("[closed]")
+            })
+            .collect();
+        all_issues.extend(open_backlog_issues);
+    } else {
+        eprintln!("Warning: Failed to fetch backlog issues. Status: {}", backlog_response.status());
+    }
+
+    // Print all issues
+    for issue in all_issues {
+        let parent_summary = issue.fields.parent.as_ref().map_or(String::new(), |parent| format!("{}: ", parent.fields.summary));
+        println!("{}{}\t{}", parent_summary, issue.key, issue.fields.summary);
+    }
+
     Ok(())
 }
 

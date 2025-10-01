@@ -12,3 +12,4 @@ base64 = "0.21"
 clap = { version = "4.3", features = ["derive"] }
 dirs = "5.0"
 anyhow = "1.0"
+urlencoding = "2.1"
